@@ -18,18 +18,22 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Instalar LibreOffice Minimal y Fontconfig
+      - name: Instalar LibreOffice Minimal y Fuentes (Open Sans + Clon de Calibri)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libreoffice-core \
             libreoffice-impress \
-            fontconfig
+            fontconfig \
+            fonts-open-sans \
+            fonts-crosextra-carlito
 
-      - name: Registrar Fuentes Personalizadas (Montserrat, Open Sans, Calibri)
+      - name: Registrar Fuente Montserrat (Privada)
         run: |
           mkdir -p ~/.local/share/fonts
+          
           cp -r fonts/* ~/.local/share/fonts/ 2>/dev/null || true
+          
           fc-cache -f -v
 
       - name: Instalar Dependencias de Python
