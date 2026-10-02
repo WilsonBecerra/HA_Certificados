@@ -12,7 +12,7 @@ from googleapiclient.http import MediaFileUpload
 # 1. PARSER DE FECHAS
 # ==========================================
 class DateParser:
-    """Clase orientada al procesamiento y extracción de fechas en formatos en español."""
+    """Procesamiento defensivo para formateo de fechas en español."""
     
     MESES = {
         1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
@@ -24,38 +24,43 @@ class DateParser:
     def parse_fecha_fin(cls, fecha_str: str) -> tuple[str, str]:
         """
         Procesa fechas tipo 'dd/mm/yyyy' o 'dd de mmmm de yyyy'
-        Devuelve una tupla: (mes, año)
+        Retorna: (mes, año)
         """
-        fecha_str = str(fecha_str).strip().lower()
+        fecha_clean = str(fecha_str).strip().lower()
         
-        # Formato dd/mm/yyyy o dd-mm-yyyy
-        if "/" in fecha_str or "-" in fecha_str:
-            delimitador = "/" if "/" in fecha_str else "-"
-            partes = fecha_str.split(delimitador)
+        # Formato numérico: dd/mm/yyyy o dd-mm-yyyy
+        if "/" in fecha_clean or "-" in fecha_clean:
+            delimitador = "/" if "/" in fecha_clean else "-"
+            partes = fecha_clean.split(delimitador)
             if len(partes) == 3:
-                num_mes = int(partes[1])
-                anio = partes[2]
-                mes = cls.MESES.get(num_mes, "Enero")
-                return mes, anio
+                try:
+                    num_mes = int(partes[1])
+                    anio = partes[2]
+                    mes = cls.MESES.get(num_mes, "Enero")
+                    return mes, anio
+                except ValueError:
+                    pass
 
-        # Formato 'dd de mmmm de yyyy'
-        match = re.search(r'(\d+)\s+de\s+([a-zA-Záéíóúñ]+)\s+de\s+(\d{4})', fecha_str)
+        # Formato texto: 'dd de mmmm de yyyy'
+        match = re.search(r'(\d+)\s+de\s+([a-zA-Záéíóúñ]+)\s+de\s+(\d{4})', fecha_clean)
         if match:
             mes = match.group(2).capitalize()
             anio = match.group(3)
             return mes, anio
 
-        # Fallback defensivo si el formato no coincide
-        fecha_actual = datetime.now()
-        return cls.MESES[fecha_actual.month], str(fecha_actual.year)
+        # Fallback de seguridad al año/mes actual si la cadena es inválida
+        now = datetime.now()
+        return cls.MESES[now.month], str(now.year)
 
 # ==========================================
 # 2. TRANSFORMADOR DE PLANTILLAS PPTX
 # ==========================================
 class PPTXTransformer:
-    """Maneja la modificación de archivos PowerPoint preservando formatos."""
+    """Manipulación de presentaciones conservando estilos y fuentes a nivel de Run."""
 
     def __init__(self, template_path: str):
+        if not os.path.exists(template_path):
+            raise FileNotFoundError(f"No se encontró la plantilla en: {template_path}")
         self.template_path = template_path
 
     def generate_presentation(self, replacements: dict, output_path: str) -> str:
@@ -75,26 +80,31 @@ class PPTXTransformer:
         return output_path
 
     def _replace_in_text_frame(self, text_frame, replacements: dict):
-        """Reemplaza placeholders buscando a nivel de párrafo y run para no perder fuentes/estilos."""
         for paragraph in text_frame.paragraphs:
             for key, value in replacements.items():
                 if key in paragraph.text:
-                    # Intenta reemplazo a nivel de Run para preservar formato exacto
-                    replaced = False
-                    for run in paragraph.runs:
-                        if key in run.text:
-                            run.text = run.text.replace(key, str(value))
-                            replaced = True
-                    
-                    # Fallback por si el placeholder quedó dividido entre varios runs
-                    if not replaced:
-                        paragraph.text = paragraph.text.replace(key, str(value))
+                    self._replace_in_paragraph(paragraph, key, str(value))
+
+    @staticmethod
+    def _replace_in_paragraph(paragraph, key: str, value: str):
+        """
+        Reemplaza preservando el formato de fuente.
+        Si la etiqueta está contenida dentro de un solo 'run', modifica solo ese run.
+        Si la etiqueta fue dividida por PowerPoint entre varios 'runs', realiza el reemplazo en el párrafo.
+        """
+        for run in paragraph.runs:
+            if key in run.text:
+                run.text = run.text.replace(key, value)
+                return
+        
+        # Fallback si el placeholder quedó fragmentado por el motor interno de PPTX
+        paragraph.text = paragraph.text.replace(key, value)
 
 # ==========================================
-# 3. CONVERTIDOR DE PPTX A PDF
+# 3. CONVERTIDOR HEADLESS (LIBREOFFICE)
 # ==========================================
 class PDFConverter:
-    """Maneja la conversión de archivos de Office a PDF mediante LibreOffice Headless."""
+    """Ejecución aislada de LibreOffice para exportación PDF."""
 
     @staticmethod
     def convert_to_pdf(input_pptx_path: str, output_dir: str) -> str:
@@ -105,19 +115,20 @@ class PDFConverter:
             "--outdir", output_dir,
             input_pptx_path
         ]
+        
         result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         
         if result.returncode != 0:
-            raise RuntimeError(f"Error al convertir a PDF mediante LibreOffice: {result.stderr}")
+            raise RuntimeError(f"Fallo en la conversión a PDF vía LibreOffice: {result.stderr}")
         
         base_name = os.path.splitext(os.path.basename(input_pptx_path))[0]
         return os.path.join(output_dir, f"{base_name}.pdf")
 
 # ==========================================
-# 4. GESTOR DE GOOGLE DRIVE API
+# 4. GESTOR API GOOGLE DRIVE
 # ==========================================
 class GoogleDriveManager:
-    """Administra la creación de directorios y subida de archivos en Google Drive."""
+    """Cliente SDK v3 para Google Drive."""
 
     SCOPES = ['https://www.googleapis.com/auth/drive']
 
@@ -148,10 +159,10 @@ class GoogleDriveManager:
         return uploaded.get('id')
 
 # ==========================================
-# 5. ORQUESTADOR DEL PROCESO
+# 5. ORQUESTADOR DE PROCESO
 # ==========================================
 class DiplomaOrchestrator:
-    """Orquesta todo el flujo end-to-end recibiendo el payload cargado."""
+    """Orquestador principal del pipeline."""
 
     PARENT_DRIVE_ID = "1J7LU585mNaco3hD5lmKwuhXf9Eu5tmBC"
     TEMPLATE_PATH = "UCAL_Plantilla.pptx"
@@ -162,41 +173,39 @@ class DiplomaOrchestrator:
         self.transformer = PPTXTransformer(self.TEMPLATE_PATH)
 
     def run(self):
-        # 1. Extraer datos generales
+        # 1. Extracción y mapeo de variables generales
         programa_raw = self.payload.get("programa", "")
         fecha_fin_raw = self.payload.get("fecha_fin", "")
         total_horas = self.payload.get("total_horas", "")
         estudiantes = self.payload.get("estudiantes", [])
 
-        # Transformación condicional del Nombre del Programa
+        # Lógica de mapeo condicional para el programa
         if str(programa_raw).strip() == "Coaching Profesional":
             programa_display = "COACHING PROFESIONAL: ACOMPAÑANDO LA TRANSFORMACIÓN"
         else:
             programa_display = programa_raw
 
-        # Procesar Mes y Año
         mes, anio = DateParser.parse_fecha_fin(fecha_fin_raw)
 
-        # 2. Configurar la estructura de carpetas en Google Drive
-        # Formato raíz: YYMMDD_[Programa] (ejemplo: 261002_Coaching Profesional)
+        # 2. Creación de la jerarquía en Google Drive: yymmdd_[Programa]
         prefix_date = datetime.now().strftime("%y%m%d")
         root_folder_name = f"{prefix_date}_{programa_raw}".strip()
 
-        print(f"📁 Creando estructura de carpetas en Drive: {root_folder_name}")
+        print(f"📁 Creando directorio raíz en Drive: {root_folder_name}")
         root_folder_id = self.drive_manager.create_folder(root_folder_name, self.PARENT_DRIVE_ID)
         editables_folder_id = self.drive_manager.create_folder("Editables", root_folder_id)
         finales_folder_id = self.drive_manager.create_folder("Finales", root_folder_id)
 
-        # Directorios temporales en local
+        # Directorios temporales de compilación
         os.makedirs("output/pptx", exist_ok=True)
         os.makedirs("output/pdf", exist_ok=True)
 
-        # 3. Procesar cada estudiante
+        # 3. Iteración sobre estudiantes
         for est in estudiantes:
             nombre = est.get("nombres_apellidos", "").strip()
             codigo = est.get("codigo_diploma", "").strip()
 
-            print(f"🎓 Procesando Diploma: {nombre} ({codigo})")
+            print(f"🎓 Procesando: {nombre} | Código: {codigo}")
 
             replacements = {
                 "{{nombre}}": nombre,
@@ -207,49 +216,47 @@ class DiplomaOrchestrator:
                 "{{programa}}": programa_display
             }
 
-            # Nombres de archivo limpitos de caracteres extraños
-            safe_filename = re.sub(r'[^\w\s-]', '', f"{codigo}_{nombre}").replace(" ", "_")
+            # Sanitización del nombre de archivo para evitar caracteres inválidos
+            safe_filename = re.sub(r'[^\w\s-]', '', f"{codigo}_{nombre}").strip().replace(" ", "_")
             local_pptx = f"output/pptx/{safe_filename}.pptx"
 
-            # Reemplazar datos en la plantilla PPTX
+            # Generar el editable .pptx
             self.transformer.generate_presentation(replacements, local_pptx)
 
-            # Convertir PPTX a PDF usando LibreOffice Headless
+            # Generar el final .pdf
             local_pdf = PDFConverter.convert_to_pdf(local_pptx, "output/pdf")
 
-            # Subir a Google Drive
-            print(f"  ⬆️ Subiendo Editable (.pptx)...")
+            # Cargar a las carpetas correspondientes en Google Drive
+            print("  ⬆️ Subiendo editable (.pptx)...")
             self.drive_manager.upload_file(
                 local_pptx, 
                 editables_folder_id, 
                 "application/vnd.openxmlformats-officedocument.presentationml.presentation"
             )
 
-            print(f"  ⬆️ Subiendo Final (.pdf)...")
+            print("  ⬆️ Subiendo final (.pdf)...")
             self.drive_manager.upload_file(
                 local_pdf, 
                 finales_folder_id, 
                 "application/pdf"
             )
 
-        print("🚀 ¡Proceso completado con éxito!")
+        print("🚀 ¡Proceso finalizado exitosamente!")
 
 
 if __name__ == "__main__":
-    # GitHub Actions almacena el evento del dispatch en la ruta apuntada por GITHUB_EVENT_PATH
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     service_account_key = os.environ.get("GDRIVE_SERVICE_ACCOUNT_KEY")
 
     if not event_path or not os.path.exists(event_path):
-        raise ValueError("No se encontró el archivo del evento de GitHub.")
+        raise ValueError("No se detectó el archivo de evento de GitHub Actions.")
     
     if not service_account_key:
-        raise ValueError("Falta el secret 'GDRIVE_SERVICE_ACCOUNT_KEY' en GitHub.")
+        raise ValueError("El Secret 'GDRIVE_SERVICE_ACCOUNT_KEY' no está configurado.")
 
     with open(event_path, "r", encoding="utf-8") as f:
         event_data = json.load(f)
 
-    # Extraemos el payload que enviamos desde Google Apps Script
     client_payload = event_data.get("client_payload", {})
 
     orchestrator = DiplomaOrchestrator(client_payload, service_account_key)
