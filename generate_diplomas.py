@@ -128,7 +128,7 @@ class PDFConverter:
 # 4. GESTOR API GOOGLE DRIVE
 # ==========================================
 class GoogleDriveManager:
-    """Cliente SDK v3 para Google Drive."""
+    """Cliente SDK v3 para Google Drive con soporte para Shared Drives."""
 
     SCOPES = ['https://www.googleapis.com/auth/drive']
 
@@ -145,7 +145,13 @@ class GoogleDriveManager:
         if parent_id:
             metadata['parents'] = [parent_id]
 
-        folder = self.service.files().create(body=metadata, fields='id').execute()
+        # Agregamos supportsAllDrives=True para operar en Unidades Compartidas
+        folder = self.service.files().create(
+            body=metadata, 
+            fields='id',
+            supportsAllDrives=True 
+        ).execute()
+        
         return folder.get('id')
 
     def upload_file(self, file_path: str, target_folder_id: str, mime_type: str) -> str:
@@ -155,9 +161,16 @@ class GoogleDriveManager:
             'parents': [target_folder_id]
         }
         media = MediaFileUpload(file_path, mimetype=mime_type, resumable=True)
-        uploaded = self.service.files().create(body=metadata, media_body=media, fields='id').execute()
+        
+        # Agregamos supportsAllDrives=True para subir archivos a la Unidad Compartida
+        uploaded = self.service.files().create(
+            body=metadata, 
+            media_body=media, 
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
+        
         return uploaded.get('id')
-
 # ==========================================
 # 5. ORQUESTADOR DE PROCESO
 # ==========================================
