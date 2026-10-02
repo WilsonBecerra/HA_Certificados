@@ -56,7 +56,7 @@ class DateParser:
 # 2. TRANSFORMADOR DE PLANTILLAS PPTX
 # ==========================================
 class PPTXTransformer:
-    """Manipulación de presentaciones conservando estilos y fuentes a nivel de Run."""
+    """Manipulación de presentaciones conservando estilos y fuentes (Run-level precision)."""
 
     def __init__(self, template_path: str):
         if not os.path.exists(template_path):
@@ -69,18 +69,19 @@ class PPTXTransformer:
         for slide in prs.slides:
             for shape in slide.shapes:
                 if shape.has_text_frame:
-                    self._replace_in_text_frame(shape.text_frame, replacements)
+                    self._process_text_frame(shape.text_frame, replacements)
                 
                 if shape.has_table:
                     for cell in shape.table.iter_cells():
                         if cell.text_frame:
-                            self._replace_in_text_frame(cell.text_frame, replacements)
+                            self._process_text_frame(cell.text_frame, replacements)
 
         prs.save(output_path)
         return output_path
 
-    def _replace_in_text_frame(self, text_frame, replacements: dict):
+    def _process_text_frame(self, text_frame, replacements: dict):
         for paragraph in text_frame.paragraphs:
+            # Procesamos cada llave de reemplazo en el párrafo
             for key, value in replacements.items():
                 if key in paragraph.text:
                     self._replace_in_paragraph(paragraph, key, str(value))
@@ -88,17 +89,32 @@ class PPTXTransformer:
     @staticmethod
     def _replace_in_paragraph(paragraph, key: str, value: str):
         """
-        Reemplaza preservando el formato de fuente.
-        Si la etiqueta está contenida dentro de un solo 'run', modifica solo ese run.
-        Si la etiqueta fue dividida por PowerPoint entre varios 'runs', realiza el reemplazo en el párrafo.
+        Reemplaza texto evadiendo la destrucción de formatos (Run properties).
         """
+        # CASO 1: Ideal. PowerPoint guardó la variable intacta en un solo nodo.
+        # Aquí reemplazamos y mantenemos el formato original al 100%.
         for run in paragraph.runs:
             if key in run.text:
                 run.text = run.text.replace(key, value)
                 return
+
+        # CASO 2: Fragmentación XML. La variable está dividida en múltiples nodos.
+        # Estrategia: Juntamos el texto, reemplazamos, guardamos el resultado
+        # en el PRIMER nodo (para que herede el color y tamaño) y vaciamos el resto.
+        text_runs = [run.text for run in paragraph.runs]
+        full_text = "".join(text_runs)
         
-        # Fallback si el placeholder quedó fragmentado por el motor interno de PPTX
-        paragraph.text = paragraph.text.replace(key, value)
+        if key in full_text:
+            replaced_text = full_text.replace(key, value)
+            
+            if len(paragraph.runs) > 0:
+                # 1. Inyectamos TODO el nuevo texto en el primer nodo (hereda el formato visual)
+                paragraph.runs[0].text = replaced_text
+                
+                # 2. Silenciamos (vaciamos) los demás nodos que formaban parte del texto antiguo.
+                # NO los borramos con .clear() para no romper el formato interno del XML.
+                for i in range(1, len(paragraph.runs)):
+                    paragraph.runs[i].text = ""
 
 # ==========================================
 # 3. CONVERTIDOR HEADLESS (LIBREOFFICE)
